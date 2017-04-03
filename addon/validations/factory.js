@@ -96,7 +96,7 @@ const {
 export default function buildValidations(validations = {}, globalOptions = {}) {
   normalizeOptions(validations, globalOptions);
 
-  let Validations, validationMixinCount;
+  let validationMixinCount;
 
   let ValidationsMixin = Ember.Mixin.create({
     init() {
@@ -107,16 +107,12 @@ export default function buildValidations(validations = {}, globalOptions = {}) {
       validationMixinCount = ++this.__validationsMixinCount__;
     },
     __validationsClass__: computed(function() {
-      if (!Validations) {
-        let inheritedClass;
+      let inheritedClass;
 
-        if (shouldCallSuper(this, '__validationsClass__') || validationMixinCount > 1) {
-          inheritedClass = this._super();
-        }
-
-        Validations = createValidationsClass(inheritedClass, validations, this);
+      if (shouldCallSuper(this, '__validationsClass__') || validationMixinCount > 1) {
+        inheritedClass = this._super();
       }
-      return Validations;
+      return createValidationsClass(inheritedClass, validations, this);
     }).readOnly(),
 
     validations: computed(function() {
@@ -264,6 +260,7 @@ function createValidationsClass(inheritedValidationsClass, validations, model) {
       this._super(...arguments);
       let validatableAttrs = get(this, 'validatableAttributes');
       let debouncedValidations = get(this, '_debouncedValidations');
+      let validationRules = makeArray(get(validations, `_validationRules`));
 
       // Initiate attrs destroy to cleanup any remaining model references
       this.get('attrs').destroy();
@@ -305,6 +302,7 @@ function createValidationsClass(inheritedValidationsClass, validations, model) {
 function createAttrsClass(validatableAttributes, validationRules, model) {
   let nestedClasses = {};
   let rootPath = 'root';
+  let allResultCollections = [];
 
   let AttrsClass = Ember.Object.extend({
     __path__: rootPath,
@@ -327,6 +325,15 @@ function createAttrsClass(validatableAttributes, validationRules, model) {
 
     destroy() {
       this._super(...arguments);
+      allResultCollections.forEach(collections => {
+        collections.forEach(collection => {
+          if (collection) {
+            collection.set('content', null);
+            collection.destroy();
+          }
+        });
+      });
+      allResultCollections.clear();
 
       let path = this.get('__path__');
 
@@ -370,9 +377,11 @@ function createAttrsClass(validatableAttributes, validationRules, model) {
       currClass = _nestedClasses[key];
     }
 
+    let { resultCollections, cp } = createCPValidationFor(attribute, model, get(validationRules, attribute));
+    allResultCollections.push(resultCollections);
     // Add the final attr's CP to the class
     currClass.reopen({
-      [attr]: createCPValidationFor(attribute, model, get(validationRules, attribute))
+      [attr]: cp
     });
   });
 
@@ -390,29 +399,47 @@ function createAttrsClass(validatableAttributes, validationRules, model) {
  * @param  {Array} validations
  * @return {Ember.ComputedProperty} A computed property which is a ResultCollection
  */
+
+ const A = emberArray();
+ function callable(method) {
+   return function(collection) {
+     return A[method].apply(collection, arguments);
+   };
+ }
+ const compact = callable('compact');
+
 function createCPValidationFor(attribute, model, validations) {
   let isVolatile = hasOption(validations, 'volatile', true);
   let dependentKeys = isVolatile ? [] : getCPDependentKeysFor(attribute, model, validations);
-
+  let resultCollections = [null, null];
   let cp = computed(...dependentKeys, cycleBreaker(function() {
     let model = get(this, '_model');
     let validators = !isNone(model) ? getValidatorsFor(attribute, model) : [];
-
     let validationResults = generateValidationResultsFor(attribute, model, validators, (validator, options) => {
       return validator.validate(validator.getValue(), options, model, attribute);
     });
-
-    return ResultCollection.create({
-      attribute,
-      content: validationResults
-    });
+    let temp = resultCollections[0];
+    resultCollections[0] = resultCollections[1];
+    resultCollections[1] = temp;
+    if (!resultCollections[0]) {
+      resultCollections[0] = ResultCollection.create({
+        attribute,
+        content: emberArray(compact(validationResults))
+      });
+    } else {
+      resultCollections[0].set('content', emberArray(compact(validationResults)));
+    }
+    return resultCollections[0];
   })).readOnly();
 
   if (isVolatile) {
     cp = cp.volatile();
   }
 
-  return cp;
+  return {
+    cp,
+    resultCollections
+  }
 }
 
 /**
@@ -459,7 +486,7 @@ function generateValidationResultsFor(attribute, model, validators, validate, op
   let isInvalid = false;
   let value, result;
 
-  return validators.map((validator) => {
+  let m = validators.map((validator) => {
     let options = get(validator, 'options').copy();
     let isWarning = getWithDefault(options, 'isWarning', false);
     let disabled = getWithDefault(options, 'disabled', false);
@@ -497,6 +524,7 @@ function generateValidationResultsFor(attribute, model, validators, validate, op
 
     return result;
   });
+  return m;
 }
 
 /**
@@ -708,6 +736,7 @@ function createValidatorsFor(attribute, model) {
   }
 
   validationRules.forEach((v) => {
+    v = Ember.copy(v);
     v.attribute = attribute;
     v.model = model;
 
