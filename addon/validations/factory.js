@@ -277,6 +277,7 @@ function createValidationsClass(inheritedValidationsClass, validations, model) {
 
       // Initiate attrs destroy to cleanup any remaining model references
       this.get('attrs').destroy();
+      this.set('model', null);
 
       // Cancel all debounced timers
       validatableAttrs.forEach(attr => {
@@ -394,7 +395,7 @@ function createAttrsClass(validatableAttributes, validationRules, model) {
       )
     });
   });
-
+  model = null;
   return AttrsClass;
 }
 
@@ -759,9 +760,8 @@ function createValidatorsFor(attribute, model) {
   }
 
   validationRules.forEach(v => {
-    v.attribute = attribute;
-    v.model = model;
-    validators.push(lookupValidator(owner, v._type).create(v));
+    let copy = Object.assign({ attribute, model }, v);
+    validators.push(lookupValidator(owner, v._type).create(copy));
   });
 
   // Add validators to model instance cache
